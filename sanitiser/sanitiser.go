@@ -51,18 +51,25 @@ func main() {
 		input = file
 	}
 
-	mappingStore, err := NewMappingStore(*storeLocation)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
-		os.Exit(1)
-	}
-	defer mappingStore.Close()
-
 	switch *mode {
 	case "encode":
+		mappingStore, err := NewMappingStore(*storeLocation, false)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
+			os.Exit(1)
+		}
+		defer mappingStore.Close()
 		encodeMode(input, mappingStore, *trimLength)
+
 	case "decode":
+		mappingStore, err := NewMappingStore(*storeLocation, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
+			os.Exit(1)
+		}
+		defer mappingStore.Close()
 		decodeMode(input, mappingStore)
+
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid mode. Use 'encode' or 'decode'.\n")
 		os.Exit(1)
@@ -99,6 +106,14 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Finalise the database (create index, analyze, and vacuum)
+	if err := mappingStore.Finalise(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error finalising database: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Encoding completed. Database optimized.\n")
 }
 
 func processSequence(header, sequence string, index int, mappingStore *MappingStore, writer *bufio.Writer, trimLength int) {

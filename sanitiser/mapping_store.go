@@ -4,9 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -14,41 +11,96 @@ type MappingStore struct {
 	db *sql.DB
 }
 
-func NewMappingStore(filePath ...string) (*MappingStore, error) {
-	var dbPath string
-	if len(filePath) > 0 {
-		// Join all provided path components
-		dbPath = filepath.Join(filePath...)
+func NewMappingStore(storeLocation string, readOnly bool) (*MappingStore, error) {
+	if storeLocation == "" {
+		storeLocation = "mapping_store.db"
+	}
+
+	var db *sql.DB
+	var err error
+
+	if readOnly {
+		db, err = openReadOnlyDB(storeLocation)
 	} else {
-		// Get the current working directory
-		currentDir, err := os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("error getting current working directory: %v", err)
-		}
-		dbPath = filepath.Join(currentDir, "fasta_sanitiser_mapping.db")
+		db, err = openWriteDB(storeLocation)
 	}
 
-	// Ensure the directory exists
-	dir := filepath.Dir(dbPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("error creating directory: %v", err)
-	}
-
-	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("error opening database: %v", err)
-	}
-
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mapping (
-        new_id TEXT PRIMARY KEY,
-        original_header TEXT
-    )`)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("error creating table: %v", err)
+		return nil, err
 	}
 
 	return &MappingStore{db: db}, nil
+}
+
+func openWriteDB(storeLocation string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", storeLocation)
+	if err != nil {
+		return nil, err
+	}
+
+	// Performance optimizations for write mode
+	optimizations := []string{
+		"PRAGMA journal_mode=OFF;",
+		"PRAGMA synchronous=OFF;",
+		"PRAGMA cache_size=1000000;",
+		"PRAGMA locking_mode=EXCLUSIVE;",
+		"PRAGMA temp_store=MEMORY;",
+	}
+
+	for _, opt := range optimizations {
+		_, err = db.Exec(opt)
+		if err != nil {
+			closeErr := db.Close()
+			if closeErr != nil {
+				return nil, fmt.Errorf("failed to set %s and close DB: %v, %v", opt, err, closeErr)
+			}
+			return nil, fmt.Errorf("failed to set %s: %v", opt, err)
+		}
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mappings (
+        new_id TEXT PRIMARY KEY,
+        original_id TEXT
+    )`)
+	if err != nil {
+		closeErr := db.Close()
+		if closeErr != nil {
+			return nil, fmt.Errorf("failed to create table and close DB: %v, %v", err, closeErr)
+		}
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func openReadOnlyDB(storeLocation string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", storeLocation+"?mode=ro")
+	if err != nil {
+		return nil, err
+	}
+
+	// Performance optimizations for read-only mode
+	optimizations := []string{
+		"PRAGMA journal_mode=OFF;",
+		"PRAGMA synchronous=OFF;",
+		"PRAGMA cache_size=1000000;",
+		"PRAGMA locking_mode=NORMAL;",
+		"PRAGMA temp_store=MEMORY;",
+		"PRAGMA mmap_size=52428800;", // 50MB in bytes (50 * 1024 * 1024)
+	}
+
+	for _, opt := range optimizations {
+		_, err = db.Exec(opt)
+		if err != nil {
+			err := db.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("failed to set %s: %v", opt, err)
+		}
+	}
+
+	return db, nil
 }
 
 func (ms *MappingStore) Close() error {
@@ -69,7 +121,12 @@ func (ms *MappingStore) ReadAllMappings() (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error querying database: %v", err)
 	}
-	defer rows.Close()
+	defer func() {
+		closeErr := rows.Close()
+		if closeErr != nil {
+			err = fmt.Errorf("error closing rows: %v", closeErr)
+		}
+	}()
 
 	for rows.Next() {
 		var newID, originalHeader string
@@ -97,4 +154,19 @@ func (ms *MappingStore) LookupOriginalID(processedID string) (string, error) {
 		return "", fmt.Errorf("error looking up original ID: %v", err)
 	}
 	return originalID, nil
+}
+func (ms *MappingStore) Finalise() error {
+	// Create index
+	_, err := ms.db.Exec("CREATE INDEX IF NOT EXISTS idx_new_id ON mappings(new_id)")
+	if err != nil {
+		return fmt.Errorf("error creating index: %v", err)
+	}
+
+	// Analyze table
+	_, err = ms.db.Exec("ANALYZE mappings")
+	if err != nil {
+		return fmt.Errorf("error analyzing table: %v", err)
+	}
+
+	return nil
 }

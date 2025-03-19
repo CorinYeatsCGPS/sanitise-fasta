@@ -18,7 +18,7 @@ cd sanitise-fasta
 3. Build the program:
 
 ```
-go build -o sanitiser
+go build -o sanitiser ./sanitiser/
 ```
 
 ## Running the Program
