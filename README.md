@@ -29,7 +29,7 @@ text.
 ### Encode Mode
 
 Encode mode reads a FASTA format file, replaces the header of each sequence with a new identifier based on the index and
-SHA1 checksum, and writes the output to STDOUT along with a mapping file.
+SHA1 checksum, and writes the output to STDOUT along with a datastore of the mapped identifiers.
 
 ```
 ./sanitiser -mode encode -input input.fasta > output.fasta
@@ -38,12 +38,12 @@ SHA1 checksum, and writes the output to STDOUT along with a mapping file.
 To read from STDIN, use '-' as the input file:
 
 ```
-cat input.fasta | ./sanitiser -mode encode -input - -mapping mapfile > output.fasta
+cat input.fasta | ./sanitiser -mode encode -input - -istore mapfile > output.fasta
 ```
 
 ### Decode Mode
 
-Decode mode reads an arbitrary text file and uses the mapping file to replace the new identifiers with the original
+Decode mode reads an arbitrary text file and uses the stored mappings to replace the new identifiers with the original
 ones, writing the output to STDOUT.
 
 ```
@@ -60,33 +60,33 @@ cat input.txt | ./sanitiser -mode decode -input - > output.txt
 
 - `-mode`: Specifies the operation mode. Must be either "encode" or "decode".
 - `-input`: Specifies the input file path. Use '-' to read from STDIN. If not provided, the program reads from STDIN.
-- `-mapping`: Specifies the mapping file path. If not provided, uses a default location.
+- `-store`: Specifies the store file path. If not provided, uses a default location.
 - `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
 
 ## Example Usage
 
-1. Encode a FASTA file:
+1. Encode a FASTA file and specify the map data location:
 
 ```
-./sanitiser -mode encode -input sequences.fasta -mapping id_mapping.txt > encoded_sequences.fasta
+./sanitiser -mode encode -input sequences.fasta -store id_store > encoded_sequences.fasta
 ```
 
 2. Encode a FASTA file with trimmed checksums:
 
 ```
-./sanitiser -mode encode -input sequences.fasta -mapping id_mapping.txt -trim 20 > encoded_sequences.fasta
+./sanitiser -mode encode -input sequences.fasta -trim 20 > encoded_sequences.fasta
 ```
 
-3. Decode a file using the mapping:
+3. Decode a file using a specified map file:
 
 ```
- ./sanitiser -mode decode -input encoded_data.txt -mapping id_mapping.txt > decoded_data.txt
+ ./sanitiser -mode decode -input encoded_data.txt -store id_store > decoded_data.txt
  ```
 
 4. Encode from STDIN:
 
 ```
-5. cat sequences.fasta | ./sanitiser -mode encode -input - -mapping id_mapping.txt > encoded_sequences.fasta
+5. cat sequences.fasta | ./sanitiser -mode encode -input - > encoded_sequences.fasta
 ```
 
 This program efficiently handles large FASTA files and provides a way to anonymize sequence identifiers while
