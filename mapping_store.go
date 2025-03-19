@@ -8,7 +8,9 @@ import (
 )
 
 type MappingStore struct {
-	db *sql.DB
+	db   *sql.DB
+	tx   *sql.Tx
+	stmt *sql.Stmt
 }
 
 func NewMappingStore(storeLocation string, readOnly bool) (*MappingStore, error) {
@@ -18,24 +20,26 @@ func NewMappingStore(storeLocation string, readOnly bool) (*MappingStore, error)
 
 	var db *sql.DB
 	var err error
+	var tx *sql.Tx
+	var stmt *sql.Stmt
 
 	if readOnly {
 		db, err = openReadOnlyDB(storeLocation)
 	} else {
-		db, err = openWriteDB(storeLocation)
+		db, tx, stmt, err = openWriteDB(storeLocation)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	return &MappingStore{db: db}, nil
+	return &MappingStore{db: db, tx: tx, stmt: stmt}, nil
 }
 
-func openWriteDB(storeLocation string) (*sql.DB, error) {
+func openWriteDB(storeLocation string) (*sql.DB, *sql.Tx, *sql.Stmt, error) {
 	db, err := sql.Open("sqlite3", storeLocation)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 
 	// Performance optimizations for write mode
@@ -50,30 +54,42 @@ func openWriteDB(storeLocation string) (*sql.DB, error) {
 	for _, opt := range optimizations {
 		_, err = db.Exec(opt)
 		if err != nil {
-			closeErr := db.Close()
-			if closeErr != nil {
-				return nil, fmt.Errorf("failed to set %s and close DB: %v, %v", opt, err, closeErr)
-			}
-			return nil, fmt.Errorf("failed to set %s: %v", opt, err)
+			db.Close()
+			return nil, nil, nil, fmt.Errorf("failed to set %s: %v", opt, err)
 		}
 	}
 
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mappings (
-        new_id TEXT PRIMARY KEY,
-        original_id TEXT
-    )`)
+	// Drop the existing table if it exists and create a new one
+	_, err = db.Exec(`DROP TABLE IF EXISTS mappings`)
 	if err != nil {
-		closeErr := db.Close()
-		if closeErr != nil {
-			return nil, fmt.Errorf("failed to create table and close DB: %v, %v", err, closeErr)
-		}
-		return nil, err
+		db.Close()
+		return nil, nil, nil, fmt.Errorf("failed to drop existing table: %v", err)
 	}
 
-	return db, nil
+	_, err = db.Exec("CREATE TABLE mappings (new_id TEXT PRIMARY KEY, original_id TEXT)")
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, fmt.Errorf("failed to create table: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		return nil, nil, nil, fmt.Errorf("failed to begin transaction: %v", err)
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO mappings (new_id, original_id) VALUES (?, ?)")
+	if err != nil {
+		tx.Rollback()
+		db.Close()
+		return nil, nil, nil, fmt.Errorf("failed to prepare statement: %v", err)
+	}
+
+	return db, tx, stmt, nil
 }
 
 func openReadOnlyDB(storeLocation string) (*sql.DB, error) {
+	// ... (keep this function as it is)
 	db, err := sql.Open("sqlite3", storeLocation+"?mode=ro")
 	if err != nil {
 		return nil, err
@@ -104,11 +120,21 @@ func openReadOnlyDB(storeLocation string) (*sql.DB, error) {
 }
 
 func (ms *MappingStore) Close() error {
+	if ms.stmt != nil {
+		ms.stmt.Close()
+	}
+	if ms.tx != nil {
+		ms.tx.Rollback()
+	}
 	return ms.db.Close()
 }
 
 func (ms *MappingStore) StorePair(newID, originalHeader string) error {
-	_, err := ms.db.Exec("INSERT INTO mapping (new_id, original_header) VALUES (?, ?)", newID, originalHeader)
+	if ms.stmt == nil {
+		return fmt.Errorf("database not in write mode")
+	}
+
+	_, err := ms.stmt.Exec(newID, originalHeader)
 	if err != nil {
 		return fmt.Errorf("error inserting mapping: %v", err)
 	}
@@ -117,7 +143,7 @@ func (ms *MappingStore) StorePair(newID, originalHeader string) error {
 
 func (ms *MappingStore) ReadAllMappings() (map[string]string, error) {
 	mapping := make(map[string]string)
-	rows, err := ms.db.Query("SELECT new_id, original_header FROM mapping")
+	rows, err := ms.db.Query("SELECT new_id, original_id FROM mappings")
 	if err != nil {
 		return nil, fmt.Errorf("error querying database: %v", err)
 	}
@@ -129,24 +155,24 @@ func (ms *MappingStore) ReadAllMappings() (map[string]string, error) {
 	}()
 
 	for rows.Next() {
-		var newID, originalHeader string
-		err := rows.Scan(&newID, &originalHeader)
+		var newID, originalID string
+		err := rows.Scan(&newID, &originalID)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning row: %v", err)
 		}
-		mapping[newID] = originalHeader
+		mapping[newID] = originalID
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating rows: %v", err)
 	}
 
-	return mapping, nil
+	return mapping, err
 }
 
 func (ms *MappingStore) LookupOriginalID(processedID string) (string, error) {
 	var originalID string
-	err := ms.db.QueryRow("SELECT original_header FROM mapping WHERE new_id = ?", processedID).Scan(&originalID)
+	err := ms.db.QueryRow("SELECT original_id FROM mappings WHERE new_id = ?", processedID).Scan(&originalID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("no mapping found for processed ID: %s", processedID)
@@ -155,9 +181,26 @@ func (ms *MappingStore) LookupOriginalID(processedID string) (string, error) {
 	}
 	return originalID, nil
 }
+
 func (ms *MappingStore) Finalise() error {
+	if ms.tx == nil {
+		return nil // Nothing to finalize in read-only mode
+	}
+
+	if ms.stmt != nil {
+		ms.stmt.Close()
+		ms.stmt = nil
+	}
+
+	err := ms.tx.Commit()
+	if err != nil {
+		ms.tx.Rollback()
+		return fmt.Errorf("error committing transaction: %v", err)
+	}
+	ms.tx = nil
+
 	// Create index
-	_, err := ms.db.Exec("CREATE INDEX IF NOT EXISTS idx_new_id ON mappings(new_id)")
+	_, err = ms.db.Exec("CREATE INDEX IF NOT EXISTS idx_new_id ON mappings(new_id)")
 	if err != nil {
 		return fmt.Errorf("error creating index: %v", err)
 	}
@@ -167,6 +210,5 @@ func (ms *MappingStore) Finalise() error {
 	if err != nil {
 		return fmt.Errorf("error analyzing table: %v", err)
 	}
-
 	return nil
 }

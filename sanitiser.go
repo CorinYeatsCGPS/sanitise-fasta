@@ -12,28 +12,34 @@ import (
 	"strings"
 )
 
+const (
+	idFormat      = "%d___%s"
+	idRegexFormat = `\d+___[a-f0-9]+`
+)
+
 func main() {
-	inputFile := flag.String("input", "", "Input file path (use '-' for STDIN)")
 	storeLocation := flag.String("store", "", "Location to store mapping data (optional, uses current directory if not provided)")
 	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (optional, uses 40 if not provided). Maximum is 40.")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [encode|decode] [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [encode|decode] <input_file> [options]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample usage:\n")
-		fmt.Fprintf(os.Stderr, "  Encode: %s encode -input input.fasta > output.fasta\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Decode: %s decode -input input.txt > output.txt\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Encode: %s encode input.fasta > output.fasta\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Decode: %s decode input.txt > output.txt\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Use '-' as input_file to read from STDIN\n")
 	}
 
 	flag.Parse()
 
-	if flag.NArg() != 1 || (flag.Arg(0) != "encode" && flag.Arg(0) != "decode") {
+	if flag.NArg() != 2 || (flag.Arg(0) != "encode" && flag.Arg(0) != "decode") {
 		flag.Usage()
 		os.Exit(1)
 	}
 
 	mode := flag.Arg(0)
+	inputFile := flag.Arg(1)
 
 	if *trimLength < 1 || *trimLength > 40 {
 		fmt.Fprintf(os.Stderr, "Error: trim value must be between 1 and 40\n")
@@ -41,10 +47,10 @@ func main() {
 	}
 
 	var input io.Reader
-	if *inputFile == "-" || *inputFile == "" {
+	if inputFile == "-" {
 		input = os.Stdin
 	} else {
-		file, err := os.Open(*inputFile)
+		file, err := os.Open(inputFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 			os.Exit(1)
@@ -77,7 +83,11 @@ func main() {
 func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
-	defer writer.Flush()
+	defer func() {
+		if err := writer.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error flushing writer: %v\n", err)
+		}
+	}()
 
 	var currentHeader, currentSequence string
 	index := 0
@@ -86,7 +96,10 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		line := scanner.Text()
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
-				processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength)
+				if err := processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength); err != nil {
+					fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
+					os.Exit(1)
+				}
 				index++
 			}
 			currentHeader = line[1:]
@@ -97,7 +110,10 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	}
 
 	if currentHeader != "" {
-		processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength)
+		if err := processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength); err != nil {
+			fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -105,28 +121,33 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		os.Exit(1)
 	}
 
-	// Finalise the database (create index, analyze, and vacuum)
+	// Finalize the database (commit transaction, create index, analyze)
 	if err := mappingStore.Finalise(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error finalising database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error finalizing database: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "Encoding completed. Database optimized.\n")
+	if _, err := fmt.Fprintf(os.Stderr, "Encoding completed. Database optimized.\n"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing completion message: %v\n", err)
+	}
 }
 
-func processSequence(header, sequence string, index int, mappingStore *MappingStore, writer *bufio.Writer, trimLength int) {
+func processSequence(header, sequence string, index int, mappingStore *MappingStore, writer *bufio.Writer, trimLength int) error {
 	hash := sha1.Sum([]byte(sequence))
 	trimmedHash := hex.EncodeToString(hash[:])[:trimLength]
-	newID := fmt.Sprintf("%d___%s", index+1, trimmedHash) // Changed to triple underscore
+	newID := fmt.Sprintf(idFormat, index+1, trimmedHash)
 	newHeader := fmt.Sprintf(">%s", newID)
 
-	err := mappingStore.StorePair(newID, header)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error storing mapping: %v\n", err)
-		os.Exit(1)
+	if err := mappingStore.StorePair(newID, header); err != nil {
+		return fmt.Errorf("error storing mapping: %v", err)
 	}
 
-	fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
+	_, err := fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
+	if err != nil {
+		return fmt.Errorf("error writing sequence: %v", err)
+	}
+
+	return nil
 }
 
 func decodeMode(input io.Reader, mappingStore *MappingStore) {
@@ -134,8 +155,13 @@ func decodeMode(input io.Reader, mappingStore *MappingStore) {
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
 
+	// Increase the buffer size to handle larger lines
+	const maxCapacity = 10 * 1024 * 1024 // 10MB
+	buf := make([]byte, maxCapacity)
+	scanner.Buffer(buf, maxCapacity)
+
 	// Regular expression to match the encoded IDs with triple underscore
-	re := regexp.MustCompile(`\d+___[a-f0-9]+`)
+	re := regexp.MustCompile(idRegexFormat)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -154,7 +180,11 @@ func decodeMode(input io.Reader, mappingStore *MappingStore) {
 			}
 		}
 
-		fmt.Fprintln(writer, line)
+		_, err := fmt.Fprintln(writer, line)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
