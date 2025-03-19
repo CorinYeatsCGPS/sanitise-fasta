@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -160,35 +161,99 @@ func decodeMode(input io.Reader, mappingStore *MappingStore) {
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
-	// Regular expression to match the encoded IDs with triple underscore
+	// Regular expression to match the encoded IDs
 	re := regexp.MustCompile(idRegexFormat)
 
-	for scanner.Scan() {
-		line := scanner.Text()
+	// Create a worker pool
+	numWorkers := runtime.NumCPU()
+	jobs := make(chan job, numWorkers)
+	results := make(chan result, numWorkers)
 
-		// Find all matches in the line
-		matches := re.FindAllString(line, -1)
+	// Start worker goroutines
+	for i := 0; i < numWorkers; i++ {
+		go worker(jobs, results, re, mappingStore)
+	}
 
-		for _, match := range matches {
-			originalID, err := mappingStore.LookupOriginalID(match)
-			if err == nil {
-				// Replace the encoded ID with the original ID
-				line = strings.Replace(line, match, originalID, 1)
+	// Process lines and collect results
+	go func() {
+		lineNum := 0
+		for scanner.Scan() {
+			jobs <- job{lineNum: lineNum, line: scanner.Text()}
+			lineNum++
+		}
+		close(jobs)
+	}()
+
+	// Collect and write results in order
+	resultCache := make(map[int]string)
+	nextLineToWrite := 0
+	jobsProcessed := 0
+	totalJobs := 0
+
+	for res := range results {
+		jobsProcessed++
+		totalJobs = max(totalJobs, res.lineNum+1)
+		resultCache[res.lineNum] = res.line
+
+		for {
+			if line, ok := resultCache[nextLineToWrite]; ok {
+				if _, err := fmt.Fprintln(writer, line); err != nil {
+					fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
+					os.Exit(1)
+				}
+				delete(resultCache, nextLineToWrite)
+				nextLineToWrite++
 			} else {
-				// If there's an error, log it but continue processing
-				fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
+				break
 			}
 		}
 
-		_, err := fmt.Fprintln(writer, line)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
-			os.Exit(1)
+		if jobsProcessed == totalJobs {
+			break
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)
+	}
+
+	close(results)
+}
+
+type job struct {
+	lineNum int
+	line    string
+}
+
+type result struct {
+	lineNum int
+	line    string
+}
+
+func worker(jobs <-chan job, results chan<- result, re *regexp.Regexp, mappingStore *MappingStore) {
+	for j := range jobs {
+		// Find all matches in the line
+		matches := re.FindAllString(j.line, -1)
+
+		if len(matches) > 0 {
+			// Create a map of replacements
+			replacements := make(map[string]string)
+			for _, match := range matches {
+				originalID, err := mappingStore.LookupOriginalID(match)
+				if err == nil {
+					replacements[match] = originalID
+				} else {
+					fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
+				}
+			}
+
+			// Perform a single pass replacement
+			for oldID, newID := range replacements {
+				j.line = strings.ReplaceAll(j.line, oldID, newID)
+			}
+		}
+
+		results <- result{lineNum: j.lineNum, line: j.line}
 	}
 }
