@@ -111,4 +111,4 @@ maintaining the ability to map them back to their original values.
 
 ## License
 
-See [the License file](License.md)
+See [the License file](LICENSE).
