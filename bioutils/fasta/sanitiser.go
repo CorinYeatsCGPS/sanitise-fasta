@@ -3,21 +3,19 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
-	"database/sql"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
 	mode := flag.String("mode", "encode", "Mode: 'encode' or 'decode'")
 	inputFile := flag.String("input", "", "Input file path (optional, uses STDIN if not provided)")
-	mappingFile := flag.String("mapping", "mapping.txt", "Mapping file path")
+	mappingFile := flag.String("mapping", "", "Mapping file path (optional, uses default location if not provided)")
 	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (max 40)")
 	flag.Parse()
 
@@ -39,23 +37,29 @@ func main() {
 		input = os.Stdin
 	}
 
+	mappingStore, err := NewMappingStore(*mappingFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
+		os.Exit(1)
+	}
+	defer mappingStore.Close()
+
 	switch *mode {
 	case "encode":
-		encodeMode(input, *mappingFile, *trimLength)
+		encodeMode(input, mappingStore, *trimLength)
 	case "decode":
-		decodeMode(input, *mappingFile)
+		decodeMode(input, mappingStore)
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid mode. Use 'encode' or 'decode'.\n")
 		os.Exit(1)
 	}
 }
 
-func encodeMode(input io.Reader, mappingFile string, trimLength int) {
+func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
 
-	mapping := make(map[string]string)
 	var currentHeader, currentSequence string
 	index := 0
 
@@ -63,7 +67,7 @@ func encodeMode(input io.Reader, mappingFile string, trimLength int) {
 		line := scanner.Text()
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
-				processSequence(currentHeader, currentSequence, index, mapping, writer, trimLength)
+				processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength)
 				index++
 			}
 			currentHeader = line[1:]
@@ -74,87 +78,55 @@ func encodeMode(input io.Reader, mappingFile string, trimLength int) {
 	}
 
 	if currentHeader != "" {
-		processSequence(currentHeader, currentSequence, index, mapping, writer, trimLength)
+		processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength)
 	}
 
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)
 	}
-
-	writeMappingFile(mappingFile, mapping)
 }
 
-func processSequence(header, sequence string, index int, mapping map[string]string, writer *bufio.Writer, trimLength int) {
+func processSequence(header, sequence string, index int, mappingStore *MappingStore, writer *bufio.Writer, trimLength int) {
 	hash := sha1.Sum([]byte(sequence))
 	trimmedHash := hex.EncodeToString(hash[:])[:trimLength]
-	newID := fmt.Sprintf("%d_%s", index+1, trimmedHash)
+	newID := fmt.Sprintf("%d___%s", index+1, trimmedHash) // Changed to triple underscore
 	newHeader := fmt.Sprintf(">%s", newID)
 
-	// Store the mapping without the '>' character
-	mapping[newID] = header
+	err := mappingStore.StorePair(newID, header)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error storing mapping: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Write the new header (with '>') and sequence to the output
 	fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
 }
 
-func writeMappingFile(filename string, mapping map[string]string) {
-	db, err := sql.Open("sqlite3", filename)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mapping (
-        new_id TEXT PRIMARY KEY,
-        original_header TEXT
-    )`)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating table: %v\n", err)
-		os.Exit(1)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error starting transaction: %v\n", err)
-		os.Exit(1)
-	}
-
-	stmt, err := tx.Prepare("INSERT INTO mapping (new_id, original_header) VALUES (?, ?)")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error preparing statement: %v\n", err)
-		os.Exit(1)
-	}
-	defer stmt.Close()
-
-	for newID, originalHeader := range mapping {
-		_, err = stmt.Exec(newID, originalHeader)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error inserting mapping: %v\n", err)
-			tx.Rollback()
-			os.Exit(1)
-		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error committing transaction: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func decodeMode(input io.Reader, mappingFile string) {
-	mapping := loadMappingFile(mappingFile)
+func decodeMode(input io.Reader, mappingStore *MappingStore) {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
 
+	// Regular expression to match the encoded IDs with triple underscore
+	re := regexp.MustCompile(`\d+___[a-f0-9]+`)
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		for newID, originalID := range mapping {
-			line = strings.ReplaceAll(line, newID, originalID)
+
+		// Find all matches in the line
+		matches := re.FindAllString(line, -1)
+
+		for _, match := range matches {
+			originalID, err := mappingStore.LookupOriginalID(match)
+			if err == nil {
+				// Replace the encoded ID with the original ID
+				line = strings.Replace(line, match, originalID, 1)
+			} else {
+				// If there's an error, log it but continue processing
+				fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
+			}
 		}
+
 		fmt.Fprintln(writer, line)
 	}
 
@@ -162,38 +134,4 @@ func decodeMode(input io.Reader, mappingFile string) {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func loadMappingFile(filename string) map[string]string {
-	db, err := sql.Open("sqlite3", filename)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	mapping := make(map[string]string)
-	rows, err := db.Query("SELECT new_id, original_header FROM mapping")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error querying database: %v\n", err)
-		os.Exit(1)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var newID, originalHeader string
-		err := rows.Scan(&newID, &originalHeader)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error scanning row: %v\n", err)
-			os.Exit(1)
-		}
-		mapping[newID] = originalHeader
-	}
-
-	if err := rows.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
-		os.Exit(1)
-	}
-
-	return mapping
 }
