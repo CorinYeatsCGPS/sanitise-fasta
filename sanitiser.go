@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
 )
 
@@ -77,7 +76,10 @@ func main() {
 			os.Exit(1)
 		}
 		defer mappingStore.Close()
-		decodeMode(input, mappingStore)
+		if err := decodeMode(input, mappingStore); err != nil {
+			fmt.Fprintf(os.Stderr, "Error in decode mode: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 
@@ -90,6 +92,23 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		}
 	}()
 
+	// Increase the buffer size to handle larger lines
+	const maxCapacity = 10 * 1024 * 1024 // 10MB
+	buf := make([]byte, maxCapacity)
+	scanner.Buffer(buf, maxCapacity)
+
+	// Channel for storing mappings
+	storeChan := make(chan storeJob, 1000)
+
+	// Start a goroutine to handle storing mappings
+	go func() {
+		for job := range storeChan {
+			if err := mappingStore.StorePair(job.newID, job.originalHeader); err != nil {
+				fmt.Fprintf(os.Stderr, "Error storing mapping: %v\n", err)
+			}
+		}
+	}()
+
 	var currentHeader, currentSequence string
 	index := 0
 
@@ -97,7 +116,7 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		line := scanner.Text()
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
-				if err := processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength); err != nil {
+				if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, storeChan); err != nil {
 					fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
 					os.Exit(1)
 				}
@@ -111,7 +130,7 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	}
 
 	if currentHeader != "" {
-		if err := processSequence(currentHeader, currentSequence, index, mappingStore, writer, trimLength); err != nil {
+		if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, storeChan); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
 			os.Exit(1)
 		}
@@ -121,6 +140,9 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Close the store channel and wait for all mappings to be stored
+	close(storeChan)
 
 	// Finalize the database (commit transaction, create index, analyze)
 	if err := mappingStore.Finalise(); err != nil {
@@ -133,15 +155,19 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	}
 }
 
-func processSequence(header, sequence string, index int, mappingStore *MappingStore, writer *bufio.Writer, trimLength int) error {
+type storeJob struct {
+	newID          string
+	originalHeader string
+}
+
+func processSequence(header, sequence string, index int, writer *bufio.Writer, trimLength int, storeChan chan<- storeJob) error {
 	hash := sha1.Sum([]byte(sequence))
 	trimmedHash := hex.EncodeToString(hash[:])[:trimLength]
 	newID := fmt.Sprintf(idFormat, index+1, trimmedHash)
 	newHeader := fmt.Sprintf(">%s", newID)
 
-	if err := mappingStore.StorePair(newID, header); err != nil {
-		return fmt.Errorf("error storing mapping: %v", err)
-	}
+	// Send the mapping to be stored asynchronously
+	storeChan <- storeJob{newID: newID, originalHeader: header}
 
 	_, err := fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
 	if err != nil {
@@ -151,7 +177,7 @@ func processSequence(header, sequence string, index int, mappingStore *MappingSt
 	return nil
 }
 
-func decodeMode(input io.Reader, mappingStore *MappingStore) {
+func decodeMode(input io.Reader, mappingStore *MappingStore) error {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
@@ -164,77 +190,12 @@ func decodeMode(input io.Reader, mappingStore *MappingStore) {
 	// Regular expression to match the encoded IDs
 	re := regexp.MustCompile(idRegexFormat)
 
-	// Create a worker pool
-	numWorkers := runtime.NumCPU()
-	jobs := make(chan job, numWorkers)
-	results := make(chan result, numWorkers)
+	lineNum := 0
+	for scanner.Scan() {
+		line := scanner.Text()
 
-	// Start worker goroutines
-	for i := 0; i < numWorkers; i++ {
-		go worker(jobs, results, re, mappingStore)
-	}
-
-	// Process lines and collect results
-	go func() {
-		lineNum := 0
-		for scanner.Scan() {
-			jobs <- job{lineNum: lineNum, line: scanner.Text()}
-			lineNum++
-		}
-		close(jobs)
-	}()
-
-	// Collect and write results in order
-	resultCache := make(map[int]string)
-	nextLineToWrite := 0
-	jobsProcessed := 0
-	totalJobs := 0
-
-	for res := range results {
-		jobsProcessed++
-		totalJobs = max(totalJobs, res.lineNum+1)
-		resultCache[res.lineNum] = res.line
-
-		for {
-			if line, ok := resultCache[nextLineToWrite]; ok {
-				if _, err := fmt.Fprintln(writer, line); err != nil {
-					fmt.Fprintf(os.Stderr, "Error writing output: %v\n", err)
-					os.Exit(1)
-				}
-				delete(resultCache, nextLineToWrite)
-				nextLineToWrite++
-			} else {
-				break
-			}
-		}
-
-		if jobsProcessed == totalJobs {
-			break
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
-		os.Exit(1)
-	}
-
-	close(results)
-}
-
-type job struct {
-	lineNum int
-	line    string
-}
-
-type result struct {
-	lineNum int
-	line    string
-}
-
-func worker(jobs <-chan job, results chan<- result, re *regexp.Regexp, mappingStore *MappingStore) {
-	for j := range jobs {
 		// Find all matches in the line
-		matches := re.FindAllString(j.line, -1)
+		matches := re.FindAllString(line, -1)
 
 		if len(matches) > 0 {
 			// Create a map of replacements
@@ -250,10 +211,20 @@ func worker(jobs <-chan job, results chan<- result, re *regexp.Regexp, mappingSt
 
 			// Perform a single pass replacement
 			for oldID, newID := range replacements {
-				j.line = strings.ReplaceAll(j.line, oldID, newID)
+				line = strings.ReplaceAll(line, oldID, newID)
 			}
 		}
 
-		results <- result{lineNum: j.lineNum, line: j.line}
+		if _, err := fmt.Fprintln(writer, line); err != nil {
+			return fmt.Errorf("error writing output at line %d: %v", lineNum, err)
+		}
+
+		lineNum++
 	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading input: %v", err)
+	}
+
+	return nil
 }

@@ -141,35 +141,6 @@ func (ms *MappingStore) StorePair(newID, originalHeader string) error {
 	return nil
 }
 
-func (ms *MappingStore) ReadAllMappings() (map[string]string, error) {
-	mapping := make(map[string]string)
-	rows, err := ms.db.Query("SELECT new_id, original_id FROM mappings")
-	if err != nil {
-		return nil, fmt.Errorf("error querying database: %v", err)
-	}
-	defer func() {
-		closeErr := rows.Close()
-		if closeErr != nil {
-			err = fmt.Errorf("error closing rows: %v", closeErr)
-		}
-	}()
-
-	for rows.Next() {
-		var newID, originalID string
-		err := rows.Scan(&newID, &originalID)
-		if err != nil {
-			return nil, fmt.Errorf("error scanning row: %v", err)
-		}
-		mapping[newID] = originalID
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating rows: %v", err)
-	}
-
-	return mapping, err
-}
-
 func (ms *MappingStore) LookupOriginalID(processedID string) (string, error) {
 	var originalID string
 	err := ms.db.QueryRow("SELECT original_id FROM mappings WHERE new_id = ?", processedID).Scan(&originalID)
