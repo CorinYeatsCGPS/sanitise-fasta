@@ -13,11 +13,25 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "encode", "Mode: 'encode' or 'decode'")
-	inputFile := flag.String("input", "", "Input file path (optional, uses STDIN if not provided)")
-	mappingFile := flag.String("mapping", "", "Mapping file path (optional, uses default location if not provided)")
-	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (max 40)")
+	mode := flag.String("mode", "", "Mode: 'encode' or 'decode'")
+	inputFile := flag.String("input", "", "Input file path (use '-' for STDIN)")
+	storeLocation := flag.String("store", "", "Location to store mapping data (optional, uses current directory if not provided)")
+	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (optional, uses 40 if not provided). Maximum is 40.")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample usage:\n")
+		fmt.Fprintf(os.Stderr, "  Encode: %s -mode encode -input input.fasta > output.fasta\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Decode: %s -mode decode -input input.txt > output.txt\n", os.Args[0])
+	}
+
 	flag.Parse()
+
+	if *mode == "" || flag.NFlag() == 0 {
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	if *trimLength < 1 || *trimLength > 40 {
 		fmt.Fprintf(os.Stderr, "Error: trim value must be between 1 and 40\n")
@@ -25,7 +39,9 @@ func main() {
 	}
 
 	var input io.Reader
-	if *inputFile != "" {
+	if *inputFile == "-" || *inputFile == "" {
+		input = os.Stdin
+	} else {
 		file, err := os.Open(*inputFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
@@ -33,11 +49,9 @@ func main() {
 		}
 		defer file.Close()
 		input = file
-	} else {
-		input = os.Stdin
 	}
 
-	mappingStore, err := NewMappingStore(*mappingFile)
+	mappingStore, err := NewMappingStore(*storeLocation)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
 		os.Exit(1)

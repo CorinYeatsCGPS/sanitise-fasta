@@ -7,7 +7,7 @@ based on their content. The length of the identifiers can be controlled as well.
 
 To build the program, follow these steps:
 
-1. Ensure you have Go installed on your system (version 1.16 or later recommended).
+1. Ensure you have Go installed on your system (version 1.22.1 or later recommended).
 2. Clone this repository:
 
 ```
@@ -18,12 +18,13 @@ cd sanitise-fasta
 3. Build the program:
 
 ```
-go build -o sanitiser bioutils/fasta/sanitiser.go
+go build -o sanitiser
 ```
 
 ## Running the Program
 
-The sanitiser program has two modes: encode and decode.
+The sanitiser program has two modes: encode and decode. If no arguments are provided, the program will display the help
+text.
 
 ### Encode Mode
 
@@ -31,13 +32,13 @@ Encode mode reads a FASTA format file, replaces the header of each sequence with
 SHA1 checksum, and writes the output to STDOUT along with a mapping file.
 
 ```
-./sanitiser -mode encode -input input.fasta -mapping mapping.txt > output.fasta
+./sanitiser -mode encode -input input.fasta > output.fasta
 ```
 
-If no input file is specified, the program will read from STDIN:
+To read from STDIN, use '-' as the input file:
 
 ```
-cat input.fasta | ./sanitiser -mode encode -mapping mapping.txt > output.fasta
+cat input.fasta | ./sanitiser -mode encode -input - -mapping mapfile > output.fasta
 ```
 
 ### Decode Mode
@@ -46,22 +47,21 @@ Decode mode reads an arbitrary text file and uses the mapping file to replace th
 ones, writing the output to STDOUT.
 
 ```
-./sanitiser -mode decode -input input.txt -mapping mapping.txt > output.txt
+./sanitiser -mode decode -input input.txt > output.txt
 ```
 
-If no input file is specified, the program will read from STDIN:
+To read from STDIN, use '-' as the input file:
 
 ```
-cat input.txt | ./sanitiser -mode decode -mapping mapping.txt > output.txt
+cat input.txt | ./sanitiser -mode decode -input - > output.txt
 ```
 
 ## Options
 
-- `-mode`: Specifies the operation mode. Can be either "encode" or "decode". Default is "encode".
-- `-input`: Specifies the input file path. If not provided, the program reads from STDIN.
-- `-mapping`: Specifies the mapping file path. Default is "mapping.txt".
-- `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum. If provided, the
-  checksum will be trimmed to this length. Default is to use the full checksum.
+- `-mode`: Specifies the operation mode. Must be either "encode" or "decode".
+- `-input`: Specifies the input file path. Use '-' to read from STDIN. If not provided, the program reads from STDIN.
+- `-mapping`: Specifies the mapping file path. If not provided, uses a default location.
+- `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
 
 ## Example Usage
 
@@ -83,17 +83,20 @@ cat input.txt | ./sanitiser -mode decode -mapping mapping.txt > output.txt
  ./sanitiser -mode decode -input encoded_data.txt -mapping id_mapping.txt > decoded_data.txt
  ```
 
+4. Encode from STDIN:
+
+```
+5. cat sequences.fasta | ./sanitiser -mode encode -input - -mapping id_mapping.txt > encoded_sequences.fasta
+```
+
 This program efficiently handles large FASTA files and provides a way to anonymize sequence identifiers while
 maintaining the ability to map them back to their original values.
 
 ## Project Structure
 
-- `main.go`: Contains the main program logic and command-line interface.
-- `README.md`: This file, containing instructions and information about the project.
-
-## Contributing
-
-If you'd like to contribute to this project, please fork the repository and submit a pull request.
+- sanitiser.go: Contains the main program logic and command-line interface.
+- mapping_store.go: Handles the storage and retrieval of mappings.
+- README.md: This file, containing instructions and information about the project.
 
 ## License
 
