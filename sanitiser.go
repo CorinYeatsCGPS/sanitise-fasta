@@ -211,7 +211,7 @@ func decodeMode(input io.Reader, mappingStore *MappingStore, csvMode bool) error
 					}
 					replacements[match] = originalID
 				} else {
-					fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
+					_, _ = fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
 				}
 			}
 
