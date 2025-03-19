@@ -20,29 +20,37 @@ const (
 func main() {
 	storeLocation := flag.String("store", "", "Location to store mapping data (optional, uses current directory if not provided)")
 	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (optional, uses 40 if not provided). Maximum is 40.")
+	csvMode := flag.Bool("csv", false, "Enable CSV mode for decoding (puts original IDs in quotes)")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [encode|decode] <input_file> [options]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] [encode|decode] <input_file>\n\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExample usage:\n")
-		fmt.Fprintf(os.Stderr, "  Encode: %s encode input.fasta > output.fasta\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Decode: %s decode input.txt > output.txt\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Use '-' as input_file to read from STDIN\n")
+		_, _ = fmt.Fprintf(os.Stderr, "\nExample usage:\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  Encode: %s encode input.fasta > output.fasta\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  Decode: %s decode input.txt > output.txt\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  Decode CSV: %s -csv decode input.csv > output.csv\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  Use '-' as input_file to read from STDIN\n")
 	}
 
 	flag.Parse()
 
-	if flag.NArg() != 2 || (flag.Arg(0) != "encode" && flag.Arg(0) != "decode") {
+	args := flag.Args()
+	if len(args) != 2 || (args[0] != "encode" && args[0] != "decode") {
 		flag.Usage()
 		os.Exit(1)
 	}
 
-	mode := flag.Arg(0)
-	inputFile := flag.Arg(1)
+	mode := args[0]
+	inputFile := args[1]
 
 	if *trimLength < 1 || *trimLength > 40 {
-		fmt.Fprintf(os.Stderr, "Error: trim value must be between 1 and 40\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Error: trim value must be between 1 and 40\n")
+		os.Exit(1)
+	}
+
+	if mode == "encode" && *csvMode {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: CSV mode (-csv) is only applicable for decode mode\n")
 		os.Exit(1)
 	}
 
@@ -52,7 +60,7 @@ func main() {
 	} else {
 		file, err := os.Open(inputFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error opening input file: %v\n", err)
 			os.Exit(1)
 		}
 		defer file.Close()
@@ -63,27 +71,27 @@ func main() {
 	case "encode":
 		mappingStore, err := NewMappingStore(*storeLocation, false)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
 			os.Exit(1)
 		}
 		defer func() {
 			if err := mappingStore.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error closing mapping store: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "Error closing mapping store: %v\n", err)
 			}
 		}()
 		if err := encodeMode(input, mappingStore, *trimLength); err != nil {
-			fmt.Fprintf(os.Stderr, "Error in encode mode: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error in encode mode: %v\n", err)
 			os.Exit(1)
 		}
 	case "decode":
 		mappingStore, err := NewMappingStore(*storeLocation, true)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
 			os.Exit(1)
 		}
 		defer mappingStore.Close()
-		if err := decodeMode(input, mappingStore); err != nil {
-			fmt.Fprintf(os.Stderr, "Error in decode mode: %v\n", err)
+		if err := decodeMode(input, mappingStore, *csvMode); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error in decode mode: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -163,7 +171,7 @@ func processSequence(header, sequence string, index int, writer *bufio.Writer, t
 	return nil
 }
 
-func decodeMode(input io.Reader, mappingStore *MappingStore) error {
+func decodeMode(input io.Reader, mappingStore *MappingStore, csvMode bool) error {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
 	defer writer.Flush()
@@ -189,6 +197,12 @@ func decodeMode(input io.Reader, mappingStore *MappingStore) error {
 			for _, match := range matches {
 				originalID, err := mappingStore.LookupOriginalID(match)
 				if err == nil {
+					if csvMode {
+						// Escape any existing double quotes in the original ID
+						originalID = strings.ReplaceAll(originalID, `"`, `""`)
+						// Wrap the original ID in double quotes
+						originalID = fmt.Sprintf(`"%s"`, originalID)
+					}
 					replacements[match] = originalID
 				} else {
 					fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)

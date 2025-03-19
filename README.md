@@ -73,6 +73,8 @@ cat input.txt | ./sanitiser decode - > output.txt
 
 - `-store`: Specifies the store file path. If not provided, uses a default location.
 - `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
+- `-csv`: (Decode mode only) Ensures original identifiers are quoted when written out to ensure CSV/TSV files don't
+  break.
 
 ## Example Usage
 
