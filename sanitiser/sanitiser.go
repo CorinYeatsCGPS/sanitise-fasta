@@ -13,25 +13,27 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "", "Mode: 'encode' or 'decode'")
 	inputFile := flag.String("input", "", "Input file path (use '-' for STDIN)")
 	storeLocation := flag.String("store", "", "Location to store mapping data (optional, uses current directory if not provided)")
 	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (optional, uses 40 if not provided). Maximum is 40.")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [encode|decode] [options]\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample usage:\n")
-		fmt.Fprintf(os.Stderr, "  Encode: %s -mode encode -input input.fasta > output.fasta\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  Decode: %s -mode decode -input input.txt > output.txt\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Encode: %s encode -input input.fasta > output.fasta\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Decode: %s decode -input input.txt > output.txt\n", os.Args[0])
 	}
 
 	flag.Parse()
 
-	if *mode == "" || flag.NFlag() == 0 {
+	if flag.NArg() != 1 || (flag.Arg(0) != "encode" && flag.Arg(0) != "decode") {
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	mode := flag.Arg(0)
 
 	if *trimLength < 1 || *trimLength > 40 {
 		fmt.Fprintf(os.Stderr, "Error: trim value must be between 1 and 40\n")
@@ -51,7 +53,7 @@ func main() {
 		input = file
 	}
 
-	switch *mode {
+	switch mode {
 	case "encode":
 		mappingStore, err := NewMappingStore(*storeLocation, false)
 		if err != nil {
@@ -69,10 +71,6 @@ func main() {
 		}
 		defer mappingStore.Close()
 		decodeMode(input, mappingStore)
-
-	default:
-		fmt.Fprintf(os.Stderr, "Invalid mode. Use 'encode' or 'decode'.\n")
-		os.Exit(1)
 	}
 }
 
