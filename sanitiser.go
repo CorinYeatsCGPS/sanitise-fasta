@@ -54,6 +54,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Automatically enable CSV mode if the input file has a .csv or .tsv extension
+	if mode == "decode" && isCSVFile(inputFile) {
+		*csvMode = true
+		_, _ = fmt.Fprintf(os.Stderr, "CSV mode automatically enabled for file with .csv or .tsv extension\n")
+	}
+
 	var input io.Reader
 	if inputFile == "-" {
 		input = os.Stdin
@@ -227,4 +233,8 @@ func decodeMode(input io.Reader, mappingStore *MappingStore, csvMode bool) error
 	}
 
 	return nil
+}
+func isCSVFile(filename string) bool {
+	lowercaseFilename := strings.ToLower(filename)
+	return strings.HasSuffix(lowercaseFilename, ".csv") || strings.HasSuffix(lowercaseFilename, ".tsv")
 }

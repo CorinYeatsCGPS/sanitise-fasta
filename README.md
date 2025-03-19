@@ -1,5 +1,6 @@
 # FASTA Sanitiser
 
+## About
 This program provides functionality to encode and decode FASTA files, replacing sequence headers with unique identifiers
 based on their content. The length of the identifiers can be controlled as well. The purpose of this software is to
 replace FASTA headers with ones that are "guaranteed" to work reliably with downstream software. The "decode"
@@ -8,8 +9,11 @@ functionality can then be used to replace the encoded contig names with the corr
 Performance is a key feature. A 5MB FASTA file can be encoded in less than 1s, and decoded in <0.1s. A 1.3MB single line
 JSON file will also decode in a similar time.
 
-NB. This may break some output formats. Commas in headers in particular may break CSV files (and tabs may break TSV
-files).
+### CSV-safe mode
+NB. Decoding may break some output formats (especially bespoke bioinformatics-style formats). However, to prevent tabs
+or commas in FASTA headers from breaking CSV file, if the software detects that the file ends in `.csv` or `.tsv` it
+will enclose the original identifier in double-quotes. This mode can be manually activated with the `-csv` option (see
+below).
 
 ## Building the Program
 
@@ -31,43 +35,14 @@ go build
 
 ## Running the Program
 
-The sanitiser program has two modes: encode and decode. If no arguments are provided, the program will display the help
-text.
-
-### Encode Mode
-
-Encode mode reads a FASTA format file, replaces the header of each sequence with a new identifier based on the index and
-SHA1 checksum, and writes the output to STDOUT and creates a datastore of the mapped identifiers.
-
-```
-./sanitiser encode input.fasta > output.fasta
-```
-
-To read from STDIN, use '-' as the input file and `-store` to write the mapping data to a specified location:
-
-```
-cat input.fasta | ./sanitiser encode - -store map.data > output.fasta
-```
-
-### Decode Mode
-
-Decode mode reads an arbitrary text file and uses the stored mappings to replace the new identifiers with the original
-ones, writing the output to STDOUT.
-
-```
-./sanitiser decode input.txt > output.txt
-```
-
-To read from STDIN, use '-' as the input file:
-
-```
-cat input.txt | ./sanitiser decode - > output.txt
-```
+The sanitiser program has two modes: encode and decode. Flags should be specified before the mode and input file. If no
+arguments are provided, the program will display the help text.
 
 ## Arguments
 
-- {mode}: Specifies the operation mode. Must be either "encode" or "decode".
-- {input}: Specifies the input file path. Use '-' to read from STDIN.
+1. [options]: Optional flags (see Options section below)
+2. {mode}: Specifies the operation mode. Must be either "encode" or "decode".
+3. {input}: Specifies the input file path. Use '-' to read from STDIN.
 
 ## Options
 
@@ -80,23 +55,33 @@ cat input.txt | ./sanitiser decode - > output.txt
 
 1. Encode a FASTA file and specify the map data location:
 
+## Example Usage
+
+1. Encode a FASTA file and specify the map data location:
+
 ```
-./sanitiser encode sequences.fasta -store id_store > encoded_sequences.fasta
+./sanitiser -store id_store encode sequences.fasta > encoded_sequences.fasta
 ```
 
 2. Encode a FASTA file with trimmed checksums:
 
 ```
-./sanitiser encode sequences.fasta -trim 20 > encoded_sequences.fasta
+./sanitiser -trim 20 encode sequences.fasta > encoded_sequences.fasta
 ```
 
 3. Decode a file using a specified map file:
 
 ```
-./sanitiser decode encoded_data.txt -store id_store > decoded_data.txt
+./sanitiser -store id_store decode encoded_data.txt > decoded_data.txt
 ```
 
-4. Encode from STDIN:
+4. Decode a CSV file safely:
+
+```
+./sanitiser -csv decode encoded_data.csv > decoded_data.csv
+```
+
+5.Encode from STDIN:
 
 ```
 cat sequences.fasta | ./sanitiser encode - > encoded_sequences.fasta
