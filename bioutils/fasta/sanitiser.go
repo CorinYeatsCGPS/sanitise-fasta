@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
@@ -85,24 +88,59 @@ func encodeMode(input io.Reader, mappingFile string, trimLength int) {
 func processSequence(header, sequence string, index int, mapping map[string]string, writer *bufio.Writer, trimLength int) {
 	hash := sha1.Sum([]byte(sequence))
 	trimmedHash := hex.EncodeToString(hash[:])[:trimLength]
-	newHeader := fmt.Sprintf(">%d_%s", index+1, trimmedHash)
-	mapping[newHeader[1:]] = header
+	newID := fmt.Sprintf("%d_%s", index+1, trimmedHash)
+	newHeader := fmt.Sprintf(">%s", newID)
+
+	// Store the mapping without the '>' character
+	mapping[newID] = header
+
+	// Write the new header (with '>') and sequence to the output
 	fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
 }
 
 func writeMappingFile(filename string, mapping map[string]string) {
-	file, err := os.Create(filename)
+	db, err := sql.Open("sqlite3", filename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating mapping file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer file.Close()
+	defer db.Close()
 
-	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS mapping (
+        new_id TEXT PRIMARY KEY,
+        original_header TEXT
+    )`)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating table: %v\n", err)
+		os.Exit(1)
+	}
 
-	for newID, originalID := range mapping {
-		fmt.Fprintf(writer, "%s\t%s\n", newID, originalID)
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting transaction: %v\n", err)
+		os.Exit(1)
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO mapping (new_id, original_header) VALUES (?, ?)")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error preparing statement: %v\n", err)
+		os.Exit(1)
+	}
+	defer stmt.Close()
+
+	for newID, originalHeader := range mapping {
+		_, err = stmt.Exec(newID, originalHeader)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error inserting mapping: %v\n", err)
+			tx.Rollback()
+			os.Exit(1)
+		}
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error committing transaction: %v\n", err)
+		os.Exit(1)
 	}
 }
 
@@ -127,24 +165,33 @@ func decodeMode(input io.Reader, mappingFile string) {
 }
 
 func loadMappingFile(filename string) map[string]string {
-	file, err := os.Open(filename)
+	db, err := sql.Open("sqlite3", filename)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening mapping file: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
 		os.Exit(1)
 	}
-	defer file.Close()
+	defer db.Close()
 
 	mapping := make(map[string]string)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		parts := strings.Split(scanner.Text(), "\t")
-		if len(parts) == 2 {
-			mapping[parts[0]] = parts[1]
+	rows, err := db.Query("SELECT new_id, original_header FROM mapping")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error querying database: %v\n", err)
+		os.Exit(1)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var newID, originalHeader string
+		err := rows.Scan(&newID, &originalHeader)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error scanning row: %v\n", err)
+			os.Exit(1)
 		}
+		mapping[newID] = originalHeader
 	}
 
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading mapping file: %v\n", err)
+	if err := rows.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error iterating rows: %v\n", err)
 		os.Exit(1)
 	}
 
