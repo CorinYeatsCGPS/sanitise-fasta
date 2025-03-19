@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	idFormat      = "%d___%s"
-	idRegexFormat = `\d+___[a-f0-9]+`
+	idFormat      = "%d_PW_%s"
+	idRegexFormat = `\d+_PW_[a-f0-9]+`
 )
 
 func main() {
@@ -66,9 +66,15 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
 			os.Exit(1)
 		}
-		defer mappingStore.Close()
-		encodeMode(input, mappingStore, *trimLength)
-
+		defer func() {
+			if err := mappingStore.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error closing mapping store: %v\n", err)
+			}
+		}()
+		if err := encodeMode(input, mappingStore, *trimLength); err != nil {
+			fmt.Fprintf(os.Stderr, "Error in encode mode: %v\n", err)
+			os.Exit(1)
+		}
 	case "decode":
 		mappingStore, err := NewMappingStore(*storeLocation, true)
 		if err != nil {
@@ -83,7 +89,7 @@ func main() {
 	}
 }
 
-func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
+func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) error {
 	scanner := bufio.NewScanner(input)
 	writer := bufio.NewWriter(os.Stdout)
 	defer func() {
@@ -97,18 +103,6 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
-	// Channel for storing mappings
-	storeChan := make(chan storeJob, 1000)
-
-	// Start a goroutine to handle storing mappings
-	go func() {
-		for job := range storeChan {
-			if err := mappingStore.StorePair(job.newID, job.originalHeader); err != nil {
-				fmt.Fprintf(os.Stderr, "Error storing mapping: %v\n", err)
-			}
-		}
-	}()
-
 	var currentHeader, currentSequence string
 	index := 0
 
@@ -116,9 +110,8 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 		line := scanner.Text()
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
-				if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, storeChan); err != nil {
-					fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
-					os.Exit(1)
+				if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, mappingStore); err != nil {
+					return fmt.Errorf("error processing sequence: %v", err)
 				}
 				index++
 			}
@@ -130,44 +123,37 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) {
 	}
 
 	if currentHeader != "" {
-		if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, storeChan); err != nil {
-			fmt.Fprintf(os.Stderr, "Error processing sequence: %v\n", err)
-			os.Exit(1)
+		if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, mappingStore); err != nil {
+			return fmt.Errorf("error processing sequence: %v", err)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error reading input: %v", err)
 	}
-
-	// Close the store channel and wait for all mappings to be stored
-	close(storeChan)
 
 	// Finalize the database (commit transaction, create index, analyze)
 	if err := mappingStore.Finalise(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error finalizing database: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("error finalizing database: %v", err)
 	}
 
 	if _, err := fmt.Fprintf(os.Stderr, "Encoding completed. Database optimized.\n"); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing completion message: %v\n", err)
+		return fmt.Errorf("error writing completion message: %v", err)
 	}
+
+	return nil
 }
 
-type storeJob struct {
-	newID          string
-	originalHeader string
-}
-
-func processSequence(header, sequence string, index int, writer *bufio.Writer, trimLength int, storeChan chan<- storeJob) error {
+func processSequence(header, sequence string, index int, writer *bufio.Writer, trimLength int, mappingStore *MappingStore) error {
 	hash := sha1.Sum([]byte(sequence))
 	trimmedHash := hex.EncodeToString(hash[:])[:trimLength]
 	newID := fmt.Sprintf(idFormat, index+1, trimmedHash)
 	newHeader := fmt.Sprintf(">%s", newID)
 
-	// Send the mapping to be stored asynchronously
-	storeChan <- storeJob{newID: newID, originalHeader: header}
+	// Store the mapping directly
+	if err := mappingStore.StorePair(newID, header); err != nil {
+		return fmt.Errorf("error storing mapping: %v", err)
+	}
 
 	_, err := fmt.Fprintf(writer, "%s\n%s\n", newHeader, sequence)
 	if err != nil {
