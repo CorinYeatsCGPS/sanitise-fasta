@@ -90,6 +90,11 @@ cat sequences.fasta | ./sanitiser encode - > encoded_sequences.fasta
 This program efficiently handles large FASTA files and provides a way to anonymize sequence identifiers while
 maintaining the ability to map them back to their original values.
 
+## Author
+
+This software was created by Corin Yeats for
+the [Centre for Genomic Pathogen Surveillance](https://www.pathogensurveillance.net/).
+
 ## Project Structure
 
 - sanitiser.go: Contains the main program logic and command-line interface.
