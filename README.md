@@ -1,17 +1,20 @@
 # FASTA Sanitiser
 
 ## About
-This program provides functionality to encode and decode FASTA files, replacing sequence headers with unique identifiers
-based on their content. The length of the identifiers can be controlled as well. The purpose of this software is to
-replace FASTA headers with ones that are "guaranteed" to work reliably with downstream software. The "decode"
-functionality can then be used to replace the encoded contig names with the correct contig names in output files.
+
+This program provides functionality to encode FASTA files with bioinformatics-safe headers, which it can then reliably
+map back to the original headers produced by downstream analyses using the "decode" feature. This tool is aimed at
+developers of community platforms that have to handle highly diverse user inputs and integrate 3rd party tools.
+
+### Raw speed
 
 Performance is a key feature. A 5MB FASTA file can be encoded in less than 1s, and decoded in <0.1s. A 1.3MB single line
 JSON file will also decode in a similar time.
 
 ### CSV-safe mode
+
 NB. Decoding may break some output formats (especially bespoke bioinformatics-style formats). However, to prevent tabs
-or commas in FASTA headers from breaking CSV file, if the software detects that the file ends in `.csv` or `.tsv` it
+or commas in FASTA headers from breaking CSV files, if the software detects that the file ends in `.csv` or `.tsv` it
 will enclose the original identifier in double-quotes. This mode can be manually activated with the `-csv` option (see
 below).
 
@@ -42,7 +45,8 @@ arguments are provided, the program will display the help text.
 
 1. [options]: Optional flags (see Options section below)
 2. {mode}: Specifies the operation mode. Must be either "encode" or "decode".
-3. {input}: Specifies the input file path. Use '-' to read from STDIN.
+3. {input}: Specifies the input file path. Use '-' to read from STDIN. "encode" mode only accepts FASTAs, while decode
+   accepts any text file.
 
 ## Options
 
@@ -50,10 +54,6 @@ arguments are provided, the program will display the help text.
 - `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
 - `-csv`: (Decode mode only) Ensures original identifiers are quoted when written out to ensure CSV/TSV files don't
   break.
-
-## Example Usage
-
-1. Encode a FASTA file and specify the map data location:
 
 ## Example Usage
 

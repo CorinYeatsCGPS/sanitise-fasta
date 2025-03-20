@@ -117,18 +117,28 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
-	var currentHeader, currentSequence string
+	// Read the first line
+	if !scanner.Scan() {
+		return fmt.Errorf("error reading input: empty file")
+	}
+	firstLine := scanner.Text()
+
+	// Check if the first line starts with ">"
+	if !strings.HasPrefix(firstLine, ">") {
+		return fmt.Errorf("input is not a valid FASTA file: first line does not start with '>'")
+	}
+
+	currentHeader := firstLine[1:]
+	currentSequence := ""
 	index := 0
 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, ">") {
-			if currentHeader != "" {
-				if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, mappingStore); err != nil {
-					return fmt.Errorf("error processing sequence: %v", err)
-				}
-				index++
+			if err := processSequence(currentHeader, currentSequence, index, writer, trimLength, mappingStore); err != nil {
+				return fmt.Errorf("error processing sequence: %v", err)
 			}
+			index++
 			currentHeader = line[1:]
 			currentSequence = ""
 		} else {
