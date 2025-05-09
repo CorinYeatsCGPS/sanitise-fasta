@@ -41,21 +41,21 @@ go build
 The sanitiser program has two modes: encode and decode. Flags should be specified before the mode and input file. If no
 arguments are provided, the program will display the help text.
 
-## Arguments
+### Arguments
 
 1. [options]: Optional flags (see Options section below)
 2. {mode}: Specifies the operation mode. Must be either "encode" or "decode".
 3. {input}: Specifies the input file path. Use '-' to read from STDIN. "encode" mode only accepts FASTAs, while decode
    accepts any text file.
 
-## Options
+### Options
 
 - `-store`: Specifies the store file path. If not provided, uses a default location.
 - `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
 - `-csv`: (Decode mode only) Ensures original identifiers are quoted when written out to ensure CSV/TSV files don't
   break.
 
-## Example Usage
+### Example Usage
 
 1. Encode a FASTA file and specify the map data location:
 
@@ -87,8 +87,15 @@ arguments are provided, the program will display the help text.
 cat sequences.fasta | ./sanitiser encode - > encoded_sequences.fasta
 ```
 
-This program efficiently handles large FASTA files and provides a way to anonymize sequence identifiers while
-maintaining the ability to map them back to their original values.
+### Warning
+
+It is not possible to run the encoding and decoding concurrently, and so it will fail if you try to put them in the same command.
+
+```
+# Don't do this!
+cat sequences.fasta | ./sanitiser encode - | my_program.py | ./sanitiser -csv decode - > results.csv
+```
+
 
 ## Author
 

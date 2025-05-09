@@ -17,9 +17,13 @@ func NewMappingStore(location string, readOnly bool) (*MappingStore, error) {
 	opts := badger.DefaultOptions(location)
 	opts.ReadOnly = readOnly
 
+	// Set the logger to log errors only
+	opts.Logger = nil
+	opts.WithLoggingLevel(badger.ERROR) // This ensures only errors are logged
+
 	db, err := badger.Open(opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open BadgerDB: %v", err)
+		return nil, fmt.Errorf("failed to open BadgerDB: %v. Note: This operation cannot be run in a piped command along with encoding", err)
 	}
 
 	return &MappingStore{db: db}, nil
@@ -51,9 +55,4 @@ func (ms *MappingStore) LookupOriginalID(newID string) (string, error) {
 
 func (ms *MappingStore) Close() error {
 	return ms.db.Close()
-}
-
-func (ms *MappingStore) Finalise() error {
-	// BadgerDB doesn't require explicit finalization like SQLite
-	return nil
 }
