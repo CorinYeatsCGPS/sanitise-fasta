@@ -80,13 +80,15 @@ func main() {
 			_, _ = fmt.Fprintf(os.Stderr, "Error creating mapping store: %v\n", err)
 			os.Exit(1)
 		}
-		defer func() {
-			if err := mappingStore.Close(); err != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "Error closing mapping store: %v\n", err)
-			}
-		}()
-		if err := encodeMode(input, mappingStore, *trimLength); err != nil {
+		err = encodeMode(input, mappingStore, *trimLength)
+		closeErr := mappingStore.Close()
+		fmt.Fprint(os.Stderr, "Closed store\n")
+		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Error in encode mode: %v\n", err)
+			os.Exit(1)
+		}
+		if closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error closing mapping store: %v\n", closeErr)
 			os.Exit(1)
 		}
 	case "decode":
@@ -169,14 +171,7 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 		return fmt.Errorf("error reading input: %v", err)
 	}
 
-	// Finalize the database (commit transaction, create index, analyze)
-	if err := mappingStore.Finalise(); err != nil {
-		return fmt.Errorf("error finalizing database: %v", err)
-	}
-
-	if _, err := fmt.Fprintf(os.Stderr, "Encoding completed. Database optimized.\n"); err != nil {
-		return fmt.Errorf("error writing completion message: %v", err)
-	}
+	fmt.Fprintf(os.Stderr, "Encoding completed. %d sequences encoded.\n", index+1)
 
 	return nil
 }
