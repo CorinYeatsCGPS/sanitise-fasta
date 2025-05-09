@@ -119,23 +119,23 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
-	// Skip blank lines and find the first non-blank line
+	// Skip blank lines and lines starting with '#', and find the first valid line
 	var firstLine string
 	for scanner.Scan() {
 		firstLine = strings.TrimSpace(scanner.Text())
-		if firstLine != "" {
+		if firstLine != "" && !strings.HasPrefix(firstLine, "#") {
 			break
 		}
 	}
 
-	// Check if we reached EOF without finding a non-blank line
+	// Check if we reached EOF without finding a valid line
 	if firstLine == "" {
-		return fmt.Errorf("error reading input: empty file or only blank lines")
+		return fmt.Errorf("error reading input: empty file or only blank/comment lines")
 	}
 
-	// Check if the first non-blank line starts with ">"
+	// Check if the first valid line starts with ">"
 	if !strings.HasPrefix(firstLine, ">") {
-		return fmt.Errorf("input is not a valid FASTA file: first non-blank line does not start with '>'")
+		return fmt.Errorf("input is not a valid FASTA file: first valid line does not start with '>'")
 	}
 
 	currentHeader := firstLine[1:]
@@ -144,8 +144,8 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue // Skip blank lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue // Skip blank lines and lines starting with '#'
 		}
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
