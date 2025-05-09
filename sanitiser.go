@@ -244,6 +244,7 @@ func decodeMode(input io.Reader, mappingStore *MappingStore, csvMode bool) error
 
 	return nil
 }
+
 func isCSVFile(filename string) bool {
 	lowercaseFilename := strings.ToLower(filename)
 	return strings.HasSuffix(lowercaseFilename, ".csv") || strings.HasSuffix(lowercaseFilename, ".tsv")
