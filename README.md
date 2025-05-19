@@ -96,6 +96,31 @@ It is not possible to run the encoding and decoding concurrently, and so it will
 cat sequences.fasta | ./sanitiser encode - | my_program.py | ./sanitiser -csv decode - > results.csv
 ```
 
+## About encoding
+
+The encoding process transforms FASTA headers into a standardized format while preserving the ability to map back to the original headers. Here's how it works:
+
+1. Input Processing:
+    - The program reads the input FASTA file line by line.
+    - Blank lines and lines starting with '#' or ';' are ignored.
+    - The first non-ignored line must start with '>' to be considered a valid FASTA file.
+
+2. Header Transformation:
+    - For each sequence, the original header (everything after the '>' character) is stored in the mapping database.
+    - A new header is generated using the format: >{index}_PW_{trimmed_hash}
+        - {index}: A 1-based counter for the sequences in the file.
+        - `_PW_`: A constant separator.
+        - {trimmed_hash}: A SHA1 hash of the sequence, trimmed to the specified length (default 40 characters).
+
+3. Output:
+    - The new header is written, followed by the unchanged sequence data.
+    - The process repeats for each sequence in the input file.
+
+4. Mapping Storage:
+    - The program stores a mapping between the new header and the original header in a persistent database.
+    - This mapping is used later during the decoding process to restore the original headers.
+
+By using this encoding method, the program ensures that all headers are in a consistent, predictable format, which can prevent issues with downstream tools that may be sensitive to certain characters or formats in FASTA headers.
 
 ## Author
 
