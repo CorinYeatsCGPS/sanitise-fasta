@@ -119,11 +119,11 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
-	// Skip blank lines and lines starting with '#', and find the first valid line
+	// Skip blank lines and lines starting with a '#' or ';', and find the first valid line
 	var firstLine string
 	for scanner.Scan() {
 		firstLine = strings.TrimSpace(scanner.Text())
-		if firstLine != "" && !strings.HasPrefix(firstLine, "#") {
+		if firstLine != "" && !strings.HasPrefix(firstLine, "#") && !strings.HasPrefix(firstLine, ";") {
 			break
 		}
 	}
@@ -144,8 +144,8 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue // Skip blank lines and lines starting with '#'
+		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(firstLine, ";") {
+			continue // Skip blank lines and lines starting with '#' or ';'
 		}
 		if strings.HasPrefix(line, ">") {
 			if currentHeader != "" {
