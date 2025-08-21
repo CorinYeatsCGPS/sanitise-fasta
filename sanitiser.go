@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ func main() {
 	storeLocation := flag.String("store", "", "Location to store mapping data (optional, uses current directory if not provided)")
 	trimLength := flag.Int("trim", 40, "Number of characters to keep from the SHA1 checksum (optional, uses 40 if not provided). Maximum is 40.")
 	csvMode := flag.Bool("csv", false, "Enable CSV mode for decoding (puts original IDs in quotes)")
+	jsonMode := flag.Bool("json", false, "Enable JSON mode for decoding (ensures keys are properly escaped)")
 
 	flag.Usage = func() {
 		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] [encode|decode] <input_file>\n\n", os.Args[0])
@@ -30,6 +32,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "  Encode: %s encode input.fasta > output.fasta\n", os.Args[0])
 		_, _ = fmt.Fprintf(os.Stderr, "  Decode: %s decode input.txt > output.txt\n", os.Args[0])
 		_, _ = fmt.Fprintf(os.Stderr, "  Decode CSV: %s -csv decode input.csv > output.csv\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  Decode JSON: %s -json decode input.json > output.json\n", os.Args[0])
 		_, _ = fmt.Fprintf(os.Stderr, "  Use '-' as input_file to read from STDIN\n")
 	}
 
@@ -49,15 +52,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	if mode == "encode" && *csvMode {
-		_, _ = fmt.Fprintf(os.Stderr, "Error: CSV mode (-csv) is only applicable for decode mode\n")
-		os.Exit(1)
-	}
-
 	// Automatically enable CSV mode if the input file has a .csv or .tsv extension
 	if mode == "decode" && isCSVFile(inputFile) {
 		*csvMode = true
 		_, _ = fmt.Fprintf(os.Stderr, "CSV mode automatically enabled for file with .csv or .tsv extension\n")
+	}
+
+	// Automatically enable JSON mode if the input file has a .json extension
+	if mode == "decode" && isJSONFile(inputFile) {
+		*jsonMode = true
+		_, _ = fmt.Fprintf(os.Stderr, "JSON mode automatically enabled for file with .json extension\n")
+	}
+
+	// Validate mode compatibility
+	if mode == "encode" && (*csvMode || *jsonMode) {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: CSV mode (-csv) and JSON mode (-json) are only applicable for decode mode\n")
+		os.Exit(1)
+	}
+
+	if *csvMode && *jsonMode {
+		_, _ = fmt.Fprintf(os.Stderr, "Error: Cannot use both CSV mode (-csv) and JSON mode (-json) simultaneously\n")
+		os.Exit(1)
 	}
 
 	var input io.Reader
@@ -98,8 +113,16 @@ func main() {
 			os.Exit(1)
 		}
 		defer mappingStore.Close()
-		if err := decodeMode(input, mappingStore, *csvMode); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Error in decode mode: %v\n", err)
+
+		var decodeErr error
+		if *jsonMode {
+			decodeErr = decodeJSONMode(input, mappingStore)
+		} else {
+			decodeErr = decodeMode(input, mappingStore, *csvMode)
+		}
+
+		if decodeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error in decode mode: %v\n", decodeErr)
 			os.Exit(1)
 		}
 	}
@@ -122,7 +145,7 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 	// Skip blank lines and lines starting with a '#' or ';', and find the first valid line
 	var firstLine string
 	for scanner.Scan() {
-		firstLine = strings.TrimSpace(scanner.Text())
+		firstLine = scanner.Text()
 		if firstLine != "" && !strings.HasPrefix(firstLine, "#") && !strings.HasPrefix(firstLine, ";") {
 			break
 		}
@@ -144,7 +167,7 @@ func encodeMode(input io.Reader, mappingStore *MappingStore, trimLength int) err
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(firstLine, ";") {
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
 			continue // Skip blank lines and lines starting with '#' or ';'
 		}
 		if strings.HasPrefix(line, ">") {
@@ -253,7 +276,94 @@ func decodeMode(input io.Reader, mappingStore *MappingStore, csvMode bool) error
 	return nil
 }
 
+func decodeJSONMode(input io.Reader, mappingStore *MappingStore) error {
+	decoder := json.NewDecoder(input)
+	encoder := json.NewEncoder(os.Stdout)
+
+	// Regular expression to match the encoded IDs
+	re := regexp.MustCompile(idRegexFormat)
+
+	// Read the entire JSON structure for processing
+	var allData interface{}
+	decoder = json.NewDecoder(input)
+	if err := decoder.Decode(&allData); err != nil {
+		return fmt.Errorf("error decoding JSON: %v", err)
+	}
+
+	// Process the JSON data recursively
+	processedData := processJSONValue(allData, re, mappingStore)
+
+	// Encode the processed data
+	if err := encoder.Encode(processedData); err != nil {
+		return fmt.Errorf("error encoding JSON: %v", err)
+	}
+
+	return nil
+}
+
+func processJSONValue(value interface{}, re *regexp.Regexp, mappingStore *MappingStore) interface{} {
+	switch v := value.(type) {
+	case string:
+		return replaceEncodedIDs(v, re, mappingStore)
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for key, val := range v {
+			// Process both keys and values
+			processedKey := replaceEncodedIDs(key, re, mappingStore)
+			processedVal := processJSONValue(val, re, mappingStore)
+			result[processedKey] = processedVal
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, val := range v {
+			result[i] = processJSONValue(val, re, mappingStore)
+		}
+		return result
+	default:
+		// For numbers, booleans, null, return as-is
+		return v
+	}
+}
+
+func replaceEncodedIDs(text string, re *regexp.Regexp, mappingStore *MappingStore) string {
+	// Find all matches in the text
+	matches := re.FindAllString(text, -1)
+
+	if len(matches) == 0 {
+		return text
+	}
+
+	// Create a map of replacements
+	replacements := make(map[string]string)
+	for _, match := range matches {
+		if _, exists := replacements[match]; exists {
+			continue // Already processed this ID
+		}
+
+		originalID, err := mappingStore.LookupOriginalID(match)
+		if err == nil {
+			replacements[match] = originalID
+		} else {
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: Could not decode ID %s: %v\n", match, err)
+		}
+	}
+
+	// Perform replacements
+	result := text
+	for oldID, newID := range replacements {
+		result = strings.ReplaceAll(result, oldID, newID)
+	}
+
+	return result
+}
+
 func isCSVFile(filename string) bool {
 	lowercaseFilename := strings.ToLower(filename)
 	return strings.HasSuffix(lowercaseFilename, ".csv") || strings.HasSuffix(lowercaseFilename, ".tsv")
+}
+
+func isJSONFile(filename string) bool {
+	lowercaseFilename := strings.ToLower(filename)
+	return strings.HasSuffix(lowercaseFilename, ".json")
 }

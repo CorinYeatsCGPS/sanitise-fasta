@@ -53,7 +53,8 @@ arguments are provided, the program will display the help text.
 - `-store`: Specifies the store file path. If not provided, uses a default location.
 - `-trim`: (Encode mode only) Specifies the number of characters to keep from the SHA1 checksum (max 40). Default is 40.
 - `-csv`: (Decode mode only) Ensures original identifiers are quoted when written out to ensure CSV/TSV files don't
-  break.
+  break. Note that this option is automatically enabled when the file ends in `.csv` or `.tsv`.
+- `-json`: (Decode mode only) Ensures original identifiers are escaped when used as JSON keys.
 
 ### Example Usage
 
@@ -89,7 +90,7 @@ cat sequences.fasta | ./sanitiser encode - > encoded_sequences.fasta
 
 ### Warning
 
-It is not possible to run the encoding and decoding concurrently, and so it will fail if you try to put them in the same command.
+_It is not possible to run the encoding and decoding concurrently_, and so it will fail if you try to put them in the same command.
 
 ```
 # Don't do this!
